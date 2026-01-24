@@ -1,21 +1,27 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import axios from 'axios';
 import jwt from 'jsonwebtoken';
-import InventoryItem from '../Model/InventoryModel.js'; // Make sure this path is correct
+import InventoryItem from '../Model/InventoryModel.js';
+import OpenAI from 'openai';
 
 dotenv.config();
 
 const router = express.Router();
 
-// Organization information
+// Organization info
 const email = 'myhome@stock.com';
 const name = 'MYHOME STOCK';
 
-// JWT Authentication Middleware
+// OpenAI setup
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// JWT middleware
 const authenticateToken = (req, res, next) => {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.sendStatus(401);
+
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) return res.sendStatus(403);
     req.user = user;
@@ -23,17 +29,16 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// POST: /api/chatbot/chat
+// POST /api/chatbot/chat
 router.post('/chat', authenticateToken, async (req, res) => {
   const { message } = req.body;
-  const lowerMsg = message.toLowerCase();
+  const lowerMsg = message?.toLowerCase() || '';
 
   try {
-    // Name 
-    if (
-      lowerMsg.includes('name') ||
-      lowerMsg.includes('who are you')
-    ) {
+    // === Inventory logic ===
+
+    // Name
+    if (lowerMsg.includes('name') || lowerMsg.includes('who are you')) {
       return res.json({ reply: name });
     }
 
@@ -47,26 +52,22 @@ router.post('/chat', authenticateToken, async (req, res) => {
       return res.json({ reply: email });
     }
 
-    //Low Stock
+    // Low Stock
     if (
       lowerMsg.includes('low stock') ||
       lowerMsg.includes('low count') ||
       lowerMsg.includes('running low')
     ) {
       const lowStockItems = await InventoryItem.find({ quantity: { $lt: 5 } });
-
-      if (lowStockItems.length === 0) {
-        return res.json({ reply: 'All items are well-stocked.' });
-      }
+      if (lowStockItems.length === 0) return res.json({ reply: 'All items are well-stocked.' });
 
       const reply = `Here are the low stock items:\n${lowStockItems
         .map((item) => `- ${item.name}: ${item.quantity}`)
         .join('\n')}`;
-
       return res.json({ reply });
     }
 
-    // Expiring 
+    // Expiring Soon
     if (
       lowerMsg.includes('expire') ||
       lowerMsg.includes('expired') ||
@@ -74,46 +75,45 @@ router.post('/chat', authenticateToken, async (req, res) => {
     ) {
       const today = new Date();
       const nextWeek = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const expiringSoon = await InventoryItem.find({ expiryDate: { $lt: nextWeek } });
 
-      const expiringSoon = await InventoryItem.find({
-        expiryDate: { $lt: nextWeek },
-      });
-
-      if (expiringSoon.length === 0) {
-        return res.json({ reply: 'No items are near expiration.' });
-      }
+      if (expiringSoon.length === 0) return res.json({ reply: 'No items are near expiration.' });
 
       const reply = `Items near expiration:\n${expiringSoon
-        .map((item) => `- ${item.name}: expires on ${item.expiryDate.toDateString()}`)
+        .map((item) => `- ${item.name}: expires on ${new Date(item.expiryDate).toDateString()}`)
         .join('\n')}`;
-
       return res.json({ reply });
     }
 
-    // === Fallback: Gemini API ===
-    const geminiResponse = await axios.post(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent',
-      {
-        contents: [{ parts: [{ text: message }] }],
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': process.env.GEMINI_API_KEY,
-        },
+    // === AI Fallback ===
+    try {
+      // Only call OpenAI if key exists
+      if (process.env.OPENAI_API_KEY) {
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [{ role: 'user', content: message }],
+        });
+        const aiReply = completion.choices[0].message.content;
+        return res.json({ reply: aiReply });
+      } else {
+        throw new Error('No OpenAI key');
       }
-    );
+    } catch (aiError) {
+      console.error('AI Error:', aiError.message);
 
-    const reply = geminiResponse.data.candidates?.[0]?.content?.parts?.[0]?.text;
+      // === Offline fallback responses ===
+      const offlineReply = (() => {
+        if (lowerMsg.includes('hello')) return 'Hello! How can I help you with inventory today?';
+        if (lowerMsg.includes('thanks')) return 'You’re welcome! 😊';
+        return '🤖 AI is temporarily unavailable. I can still answer inventory questions like "low stock" or "expiry".';
+      })();
 
-    if (!reply) {
-      return res.status(500).json({ error: 'No reply from Gemini' });
+      return res.json({ reply: offlineReply });
     }
 
-    res.json({ reply });
   } catch (error) {
     console.error('Chatbot Error:', error.message);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
