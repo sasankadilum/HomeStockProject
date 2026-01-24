@@ -9,10 +9,16 @@ import adminRoutes from "./Route/adminRoutes.js";
 import shoppingListRoutes from "./Route/ShoppingListroute.js";
 import Inventory from './Model/InventoryModel.js';
 import chatbotRoutes from './Route/chatbotRoutes.js';
+import dns from 'node:dns/promises'; 
 
 dotenv.config();
 
 const app = express();
+
+// 👉 DNS fix
+
+// const dns = require('dns').promises;
+dns.setServers(['1.1.1.1']);
 
 // Middleware to handle cross-origin requests and parse JSON bodies
 app.use(cors());
@@ -22,14 +28,13 @@ app.use(express.urlencoded({ extended: true }));
 
 
 // MongoDB connection using environment variables
+
 const mongoURI = process.env.MONGODB_URI;
 
-mongoose.connect(mongoURI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+mongoose.connect(mongoURI)
   .then(() => console.log('MongoDB connected'))
-  .catch((err) => console.error('MongoDB connection error:', err));
+  .catch(err => console.error('MongoDB connection error:', err));
+
 
 // Use the category routes
 app.use('/', CategoryRoute);  // Ensure the route paths are handled correctly
